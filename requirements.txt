@@ -5,3 +5,5 @@ numpy
 beautifulsoup4
 chromadb
 nltk
+scikit-learn
+google-generativeai

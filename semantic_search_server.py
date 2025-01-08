@@ -11,18 +11,30 @@ import json
 from datetime import datetime
 import re
 import hashlib
+import google.generativeai as genai
+import os
+from dotenv import load_dotenv
+import math
+
+# Load environment variables
+load_dotenv()
+
+# Configure Gemini API
+GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+genai.configure(api_key=GOOGLE_API_KEY)
+model = genai.GenerativeModel('gemini-2.0-flash-exp')
 
 # Download required NLTK data
 nltk.download('punkt', quiet=True)
-nltk.download('punkt_tab', quiet=True)
+nltk.download('stopwords', quiet=True)
 
 app = Flask(__name__)
 CORS(app)
 
 # Initialize SBERT model and ChromaDB
-model_name = 'all-MiniLM-L6-v2'
+model_name = 'sentence-transformers/multi-qa-MiniLM-L6-cos-v1'
 sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model_name)
-max_sequence_length = 256 
+max_sequence_length = 512
 
 # Initialize ChromaDB
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
@@ -34,62 +46,112 @@ except:
         embedding_function=sentence_transformer_ef
     )
 
+def clean_html(html_content):
+    """Clean and prepare HTML content for LLM processing."""
+    if not html_content or not html_content.strip():
+        return ""
+    
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Remove unwanted elements
+        for element in soup.find_all(['script', 'style', 'nav', 'footer', 'iframe', 'header', 
+                                    'aside', 'form', 'noscript', 'img']):
+            element.decompose()
+        
+        # Extract title
+        title = ""
+        if soup.title:
+            title = soup.title.string
+        
+        # Extract meta description
+        meta_desc = ""
+        meta_tag = soup.find('meta', attrs={'name': 'description'})
+        if meta_tag and meta_tag.get('content'):
+            meta_desc = meta_tag['content']
+        
+        # Get main content elements
+        main_elements = soup.find_all(['article', 'main', 'div', 'section', 'p', 'h1', 'h2', 'h3'])
+        
+        # Prepare structured content
+        structured_content = {
+            'title': title.strip() if title else "",
+            'meta_description': meta_desc.strip(),
+            'main_content': ' '.join(elem.get_text().strip() for elem in main_elements if elem.get_text().strip())
+        }
+        
+        return structured_content
+        
+    except Exception as e:
+        print(f"Error cleaning HTML: {str(e)}")
+        return ""
+
+def extract_main_content(html_content, main_text):
+    """Extract main content using hybrid approach with BeautifulSoup and Gemini."""
+    try:
+        # First clean and structure the HTML
+        cleaned_content = clean_html(html_content)
+        if not cleaned_content:
+            return ""
+        
+        # Prepare prompt for Gemini
+        prompt = f"""
+        Analyze this webpage content and extract the most meaningful and relevant information.
+        You only need to select the most relavant content. For example, if the webpage contains a table of content or a sidebar then skip those.
+        Similarly, we do not need things like recommendations of other videos when we are talking about youtube pages. These things are irrelevant to the context of the current webpage.
+        Focus on the main content while excluding any navigational elements, ads, or boilerplate text.
+        
+        Title: {cleaned_content['title']}
+        Meta Description: {cleaned_content['meta_description']}
+        
+        Content: {cleaned_content['main_content']}
+        
+        Return only the essential information that best represents what this page is about.
+        Format your response as clean text without any markdown or special formatting.
+        Return only the content from within the main content area. Do not write or create anything by yourself.
+        """
+        
+        # Get response from Gemini
+        response = model.generate_content(prompt)
+        
+        if response.text:
+            # Clean the extracted content
+            extracted_content = response.text
+            
+            # Combine with title and meta description if they're meaningful
+            content_parts = []
+            if cleaned_content['title']:
+                content_parts.append(cleaned_content['title'])
+            if cleaned_content['meta_description']:
+                content_parts.append(cleaned_content['meta_description'])
+            content_parts.append(extracted_content)
+            
+            return ' '.join(content_parts)
+        
+        return ""
+        
+    except Exception as e:
+        print(f"Error in content extraction: {str(e)}")
+        return ""
+
 def clean_text(text):
     """Clean and normalize text content."""
     # Remove extra whitespace
     text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Remove URLs
+    text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
+    
+    # Remove email addresses
+    text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', '', text)
+    
     # Remove special characters but keep punctuation
     text = re.sub(r'[^\w\s.,!?-]', '', text)
-    return text
-
-def extract_main_content(html_content, main_text):
-    """Extract main content using both HTML and pre-extracted text."""
-    content_parts = []
     
-    # First, try to use the pre-extracted main text
-    if main_text and main_text.strip():
-        print("Using pre-extracted main text")
-        content_parts.append(clean_text(main_text))
+    # Remove multiple punctuation
+    text = re.sub(r'([.,!?])\1+', r'\1', text)
     
-    # Then try to extract from HTML as backup
-    if html_content and html_content.strip():
-        print("Processing HTML content")
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # Remove unwanted elements
-            for element in soup.find_all(['script', 'style', 'nav', 'footer', 'iframe', 'header']):
-                element.decompose()
-            
-            # Get title
-            if soup.title:
-                content_parts.append(clean_text(soup.title.string))
-            
-            # Get meta description
-            meta_desc = soup.find('meta', attrs={'name': 'description'})
-            if meta_desc and meta_desc.get('content'):
-                content_parts.append(clean_text(meta_desc['content']))
-            
-            # Try to get main content
-            main_elements = soup.find_all(['main', 'article'], role='main')
-            if main_elements:
-                for elem in main_elements:
-                    content_parts.append(clean_text(elem.get_text()))
-            
-            # Get headers as they're usually important
-            headers = []
-            for tag in ['h1', 'h2', 'h3']:
-                headers.extend([h.get_text() for h in soup.find_all(tag)])
-            if headers:
-                content_parts.append(clean_text(' '.join(headers)))
-            
-        except Exception as e:
-            print(f"Error processing HTML: {str(e)}")
-    
-    # Combine all content parts
-    combined_content = ' '.join(filter(None, content_parts))
-    print(f"Extracted content length: {len(combined_content)}")
-    return combined_content
+    return text.strip()
 
 def chunk_content(content, max_length=max_sequence_length):
     """Split content into semantic chunks."""
@@ -121,7 +183,7 @@ def chunk_content(content, max_length=max_sequence_length):
     if current_chunk:
         chunk_text = ' '.join(current_chunk)
         chunks.append(chunk_text)
-        print(f"Created final chunk {len(chunks)} (length: {len(chunk_text)})")
+        print(f"Created final chunk {len(chunks)} (length: {len(chunk_text)}) \nChunk: {chunk_text}")
     
     print(f"Created {len(chunks)} total chunks")
     return chunks
@@ -139,7 +201,7 @@ def process_content():
     try:
         print(f"Processing content for URL: {url}")
         
-        # Extract main content using both HTML and pre-extracted text
+        # Extract main content using hybrid approach
         main_content = extract_main_content(html_content, main_text)
         
         if not main_content:
@@ -195,7 +257,7 @@ def semantic_search():
         # Search in ChromaDB
         search_results = collection.query(
             query_texts=[query],
-            n_results=20  # Get more results initially for grouping
+            n_results=100  # Get more results initially for grouping
         )
         
         # Group results by URL and calculate combined relevance
@@ -208,41 +270,70 @@ def semantic_search():
                     'title': metadata['title'],
                     'timestamp': metadata['timestamp'],
                     'chunks': [],
-                    'avg_distance': 0,
+                    'avg_similarity': 0,
                     'matching_chunks': 0
                 }
             
-            grouped_results[url]['chunks'].append({
-                'content': search_results['documents'][0][i],
-                'distance': distance
-            })
-            grouped_results[url]['matching_chunks'] += 1
-            grouped_results[url]['avg_distance'] = (
-                sum(c['distance'] for c in grouped_results[url]['chunks']) / 
-                len(grouped_results[url]['chunks'])
-            )
+            try:
+                # Ensure distance is a valid float and handle potential NaN values
+                similarity = float(distance)
+                if not isinstance(similarity, (int, float)) or math.isnan(similarity):
+                    similarity = 0.0
+                
+                grouped_results[url]['chunks'].append({
+                    'content': search_results['documents'][0][i],
+                    'similarity': similarity
+                })
+                grouped_results[url]['matching_chunks'] += 1
+                
+                # Calculate average similarity with error handling
+                chunk_similarities = [c['similarity'] for c in grouped_results[url]['chunks']]
+                if chunk_similarities:
+                    avg_similarity = sum(chunk_similarities) / len(chunk_similarities)
+                    grouped_results[url]['avg_similarity'] = avg_similarity if not math.isnan(avg_similarity) else 0.0
+                else:
+                    grouped_results[url]['avg_similarity'] = 0.0
+                    
+            except (ValueError, TypeError) as e:
+                print(f"Error processing similarity for chunk: {e}")
+                continue
         
         # Convert to list and sort by relevance
         results = list(grouped_results.values())
-        results.sort(key=lambda x: (x['matching_chunks'], -x['avg_distance']), reverse=True)
+        results.sort(key=lambda x: (x['matching_chunks'], x['avg_similarity']), reverse=True)
         
         # Format top 10 results
         top_results = []
         for result in results[:10]:
-            # Get the most relevant chunk as preview
-            best_chunk = min(result['chunks'], key=lambda x: x['distance'])
-            top_results.append({
-                'url': result['url'],
-                'title': result['title'],
-                'timestamp': result['timestamp'],
-                'similarity': 1 - result['avg_distance'],  # Convert distance to similarity
-                'preview': best_chunk['content'][:200] + '...',
-                'matching_chunks': result['matching_chunks']
-            })
+            try:
+                # Get the most relevant chunk as preview
+                best_chunk = max(result['chunks'], key=lambda x: x['similarity'])
+                similarity_percentage = max(min(result['avg_similarity'] * 100, 100), 0)  # Clamp between 0-100
+                
+                top_results.append({
+                    'url': result['url'],
+                    'title': result['title'],
+                    'timestamp': result['timestamp'],
+                    'similarity': f"{similarity_percentage:.1f}%" if not math.isnan(similarity_percentage) else "0.0%",
+                    'preview': best_chunk['content'][:200] + '...',
+                    'matching_chunks': result['matching_chunks']
+                })
+            except (ValueError, TypeError, KeyError) as e:
+                print(f"Error formatting result: {e}")
+                continue
         
-        return jsonify({'results': top_results})
+        return jsonify({
+            'results': top_results,
+            'query': query
+        })
+        
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        print(f"Error in semantic search: {str(e)}")
+        return jsonify({
+            'error': str(e),
+            'results': [],
+            'query': query
+        })
 
 if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+    app.run(port=5000, debug=True) 

@@ -15,3 +15,7 @@ __pycache__/
 
 # Chroma Database files
 chroma_db/
+
+
+# Environment Variable Files
+.env
