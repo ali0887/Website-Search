@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Website History Logger</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Website History Search</h1>
+        
+        <div class="search-container">
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="Enter your search term...">
+                <select id="searchType">
+                    <option value="url">Search by URL</option>
+                    <option value="title">Search by Title</option>
+                </select>
+            </div>
+            <button id="searchButton">Search</button>
+        </div>
+
+        <div class="results-container">
+            <div id="results"></div>
+        </div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>
