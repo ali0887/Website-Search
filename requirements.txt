@@ -1,0 +1,5 @@
+sentence-transformers
+flask
+flask-cors
+numpy
+beautifulsoup4

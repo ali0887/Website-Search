@@ -18,12 +18,21 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
                     timestamp: new Date().toISOString(),
                 };
 
-                // Store the data
+                // Store the data locally
                 chrome.storage.local.get(['history'], (result) => {
                     const history = result.history || [];
                     history.push(visitData);
                     chrome.storage.local.set({ history: history });
                 });
+
+                // Send to Python backend for processing
+                fetch('http://localhost:5000/process_content', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(visitData)
+                }).catch(error => console.error('Error sending data to backend:', error));
 
                 // Update tabsState
                 tabsState[tabId] = {
@@ -42,9 +51,19 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 // Function to get page content
 function getPageContent() {
-    // Get text content while removing excess whitespace
-    return document.body.innerText
-        .replace(/\s+/g, ' ')
-        .trim()
-        .substring(0, 1000); // Limit content length
+    // Get full page content including text and basic structure
+    const content = [];
+    
+    // Get title and headers for context
+    content.push(document.title);
+    document.querySelectorAll('h1, h2, h3').forEach(header => {
+        content.push(header.textContent);
+    });
+    
+    // Get main content
+    const mainContent = document.body.innerText;
+    content.push(mainContent);
+    
+    // Join all content with spaces
+    return content.join(' ').replace(/\s+/g, ' ').trim();
 }
