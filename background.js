@@ -10,11 +10,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
                 target: { tabId: tabId },
                 function: getPageContent,
             }).then((results) => {
-                const pageContent = results[0].result;
+                const pageData = results[0].result;
                 const visitData = {
                     url: tab.url,
                     title: tab.title,
-                    content: pageContent,
+                    content: pageData.content,
+                    mainText: pageData.mainText,
                     timestamp: new Date().toISOString(),
                 };
 
@@ -51,19 +52,46 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
 // Function to get page content
 function getPageContent() {
-    // Get full page content including text and basic structure
-    const content = [];
+    // Get both HTML and text content
+    const content = {
+        // Get the HTML content of the main content areas
+        content: document.documentElement.outerHTML,
+        // Get the main text content as backup
+        mainText: (() => {
+            const mainContent = [];
+            
+            // Get title
+            const title = document.title;
+            if (title) mainContent.push(title);
+            
+            // Get meta description
+            const metaDesc = document.querySelector('meta[name="description"]');
+            if (metaDesc) mainContent.push(metaDesc.content);
+            
+            // Get main content areas
+            const mainElements = document.querySelectorAll('main, article, [role="main"]');
+            if (mainElements.length > 0) {
+                mainElements.forEach(elem => mainContent.push(elem.innerText));
+            } else {
+                // If no main content areas found, get content from body
+                const bodyText = Array.from(document.body.children)
+                    .filter(elem => {
+                        const tag = elem.tagName.toLowerCase();
+                        // Exclude common non-content elements
+                        return !['script', 'style', 'nav', 'header', 'footer'].includes(tag);
+                    })
+                    .map(elem => elem.innerText)
+                    .join('\n');
+                mainContent.push(bodyText);
+            }
+            
+            // Get headers
+            const headers = document.querySelectorAll('h1, h2, h3');
+            headers.forEach(header => mainContent.push(header.innerText));
+            
+            return mainContent.join('\n').trim();
+        })()
+    };
     
-    // Get title and headers for context
-    content.push(document.title);
-    document.querySelectorAll('h1, h2, h3').forEach(header => {
-        content.push(header.textContent);
-    });
-    
-    // Get main content
-    const mainContent = document.body.innerText;
-    content.push(mainContent);
-    
-    // Join all content with spaces
-    return content.join(' ').replace(/\s+/g, ' ').trim();
+    return content;
 }

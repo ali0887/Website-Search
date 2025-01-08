@@ -3,3 +3,5 @@ flask
 flask-cors
 numpy
 beautifulsoup4
+chromadb
+nltk
